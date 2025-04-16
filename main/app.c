@@ -21,6 +21,11 @@
 #define APP_TASK_STACK_SIZE 3 * 1024
 #define APP_TASK_PRIOR 2
 
+#define APP_TIMER_HAND_NAME "APP_TIMER_HAND"
+#define APP_TIMER_HAND_PERIOD pdMS_TO_TICKS(5 * 1000)
+#define APP_TIMER_HAND_AUTORELOAD false
+#define APP_TIMER_HAND_ID 0
+
 #define APP_HAND_ON (1 << 0)
 #define APP_HAND_OFF (1 << 1)
 
@@ -28,26 +33,28 @@
 
 TaskHandle_t app_task_handle;
 EventGroupHandle_t app_event;
-TimerHandle_t timer_hand;
+TimerHandle_t app_timer_hand;
 
 volatile bool app_hand_state = false;
+float temp_sum = 0.0, contt = 0.0;
 
 static void IRAM_ATTR app_intr_hand(void *arg)
 {
     BaseType_t pxH = pdFALSE;
 
-    app_hand_state = !gpio_get_level(IR_GPIO);
-    if (app_hand_state)
-    {
-        xEventGroupSetBitsFromISR(app_event, APP_HAND_ON, &pxH);
-    }
-    else
-    {
-        xEventGroupClearBitsFromISR(app_event, APP_HAND_ON);
-        xEventGroupSetBitsFromISR(app_event, APP_HAND_OFF, &pxH);
-    }
+    xEventGroupSetBitsFromISR(app_event, APP_HAND_ON, &pxH);
+    app_hand_state = true;
 
     portYIELD_FROM_ISR(pxH);
+}
+
+void app_timer_hand_callback(TimerHandle_t app_timer_hand)
+{
+    ESP_LOGE(TAG, "timer flag");
+    temp_sum = 0;
+    contt = 0.0;
+    xEventGroupClearBits(app_event, APP_HAND_ON);
+    display_clear(false);
 }
 
 void app_task(void *args)
@@ -59,18 +66,53 @@ void app_task(void *args)
         bits = xEventGroupGetBits(app_event);
         if (bits & APP_HAND_ON)
         {
+            ESP_LOGI(TAG, "APP_HAND_ON");
             volatile float temp = temp_read_temp_to();
 
-            snprintf(buffer, APP_BUFFER_DISPLAY_SIZE_MAX, "C: %.2f", temp);
+            contt += 1.0; // <- TODO: limitar tamanho
+            // Média flutuante
+            // temp_sum = temp_sum + temp;
+            // float temp_float = temp_sum / contt;
+            // snprintf(buffer, APP_BUFFER_DISPLAY_SIZE_MAX, "C: %.2f", temp_float);
+
+            // EMA
+            float alfa = 0.1;
+            if (temp_sum == 0)
+            {
+                temp_sum = temp;
+            }
+            else
+            {
+                temp_sum = temp * alfa + (1 - alfa) * temp_sum;
+            }
+            snprintf(buffer, APP_BUFFER_DISPLAY_SIZE_MAX, "C: %.2f", temp_sum);
 
             display_write(buffer, strlen(buffer), 4, false);
         }
 
+        if (gpio_get_level(IR_GPIO) && app_hand_state)
+        {
+            xEventGroupSetBits(app_event, APP_HAND_OFF);
+        }
+
         if (bits & APP_HAND_OFF)
         {
-            display_clear(false);
-            xEventGroupClearBits(app_event, APP_HAND_OFF);
+            ESP_LOGI(TAG, "APP_HAND_OFF");
+            app_hand_state = false;
+            xEventGroupClearBitsFromISR(app_event, APP_HAND_OFF);
+
+            if (xTimerIsTimerActive(app_timer_hand) != pdFALSE)
+            {
+                xTimerReset(app_timer_hand, 0);
+                ESP_LOGE(TAG, "timer reset");
+            }
+            else
+            {
+                xTimerStart(app_timer_hand, 0);
+                ESP_LOGE(TAG, "timer init");
+            }
         }
+
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -82,7 +124,7 @@ esp_err_t app_init(void)
     gpio_config_t io_conf = {
         .pin_bit_mask = 1 << IR_GPIO,
         .mode = GPIO_MODE_INPUT,
-        .intr_type = GPIO_INTR_ANYEDGE,
+        .intr_type = GPIO_INTR_NEGEDGE,
         .pull_up_en = 1};
     res = gpio_config(&io_conf);
     if (res != ESP_OK)
@@ -91,7 +133,7 @@ esp_err_t app_init(void)
         return res;
     }
 
-    res = gpio_set_intr_type(IR_GPIO, GPIO_INTR_ANYEDGE);
+    res = gpio_set_intr_type(IR_GPIO, GPIO_INTR_NEGEDGE);
     if (res != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed configure gpio interrupt");
@@ -102,6 +144,18 @@ esp_err_t app_init(void)
     if (app_event == NULL)
     {
         ESP_LOGE(TAG, "Failed create event group");
+        return ESP_FAIL;
+    }
+
+    app_timer_hand = xTimerCreate(
+        APP_TIMER_HAND_NAME,
+        APP_TIMER_HAND_PERIOD,
+        APP_TIMER_HAND_AUTORELOAD,
+        APP_TIMER_HAND_ID,
+        app_timer_hand_callback);
+    if (app_timer_hand == NULL)
+    {
+        ESP_LOGE(TAG, "Failed create timer");
         return ESP_FAIL;
     }
 
