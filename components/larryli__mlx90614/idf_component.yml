@@ -1,0 +1,10 @@
+dependencies:
+  idf: '>=5.2'
+description: MLX90614 component
+license: MIT
+repository: git://github.com/larryli/esp-idf_mlx90614.git
+repository_info:
+  commit_sha: 8a1891f749813f7d90a0f3184f25390a7ae8009f
+  path: .
+url: https://github.com/larryli/esp-idf_mlx90614
+version: 1.0.2

@@ -9,4 +9,8 @@
 
 #define DISPLAY_ADDRS 0x3C
 #define TEMP_ADDRS 0x5A
+
+#define IR_GPIO GPIO_NUM_6
+
+#define APP_BUFFER_DISPLAY_SIZE_MAX 64
 #endif

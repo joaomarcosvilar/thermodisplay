@@ -10,6 +10,7 @@
 
 static void* g_i2c_bus_cache = NULL;
 static i2c_master_bus_handle_t g_i2c_bus_handle = NULL;
+static bool i2c_is_runnig = false;
 
 esp_err_t i2c_local_init(void)
 {
@@ -28,12 +29,13 @@ esp_err_t i2c_local_init(void)
     }
 
     g_i2c_bus_cache = (void*)g_i2c_bus_handle;
+    i2c_is_runnig = true;
     return res;
 }
 
 esp_err_t i2c_local_get_bus(void **handle)
 {
-    if (g_i2c_bus_handle == NULL)
+    if (g_i2c_bus_handle == NULL || !i2c_is_runnig)
         return ESP_ERR_INVALID_SIZE;
 
     *handle = g_i2c_bus_handle;

@@ -1,0 +1,6 @@
+description: 'Get started for MLX90614'
+dependencies:
+  idf: '>=5.2'
+  larryli/mlx90614:
+    version: '*'
+    override_path: '../../../'

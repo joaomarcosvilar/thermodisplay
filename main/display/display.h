@@ -7,9 +7,12 @@
 #define DISPLAY_FREQ 40000
 
 #define DISPLAY_WIDTH 128
-#define DISPLAY_EIGHT 64
+#define DISPLAY_HEIGHT 64
 
 
 esp_err_t display_init(void);
+void display_write(char *data, int len, int line, bool invert);
+void display_clear(bool invert);
+
 
 #endif

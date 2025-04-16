@@ -7,7 +7,7 @@
 #define TEMP_FREQ 40000
 
 esp_err_t temp_init(void);
-float temp_read_temp(void);
+float temp_read_temp_to(void);
 float temp_read_temp_ta(void);
 
 #endif
