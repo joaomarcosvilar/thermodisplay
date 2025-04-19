@@ -67,6 +67,13 @@ void app_task(void *args)
         if (bits & APP_HAND_ON)
         {
             ESP_LOGI(TAG, "APP_HAND_ON");
+
+            if ((xTimerIsTimerActive(app_timer_hand) != pdFALSE) && !gpio_get_level(IR_GPIO))
+            {
+                xTimerStop(app_timer_hand, 0);
+                ESP_LOGI(TAG,"stop timer");
+            }
+
             volatile float temp = temp_read_temp_to();
 
             contt += 1.0; // <- TODO: limitar tamanho
