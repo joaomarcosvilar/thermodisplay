@@ -3,95 +3,144 @@
 #include "esp_log.h"
 
 #include <u8g2.h>
-#include "u8g2_i2c.h"
 #include "driver/i2c.h"
 #include "driver/i2c_master.h"
+#include "driver/gpio.h"
 
 #include "i2c_local.h"
 #include "common.h"
+#include "image_bitmap.h"
 
 #include "display.h"
 
-#define TAG "display"
+#define TAG "DISPLAY"
 
-// Declare a estrutura u8g2 como global para persistir além da função de inicialização
-static u8g2_t u8g2;
-static u8g2_i2c_t display_handle;
-static bool display_initialized = false;
+typedef struct
+{
+    gpio_num_t sda_pin;
+    gpio_num_t scl_pin;
+    uint32_t i2c_freq;
+    uint8_t adrss;
+    i2c_master_bus_handle_t bus_handle;
+    i2c_master_dev_handle_t dev_handle;
+} display_t;
+
+display_t g_display_device;
+u8g2_t g_display_u8g2;
+
+uint8_t display_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
+{
+    esp_err_t ret;
+
+    switch (msg)
+    {
+    case U8X8_MSG_BYTE_INIT:
+    {
+        i2c_device_config_t config = {
+            .device_address = g_display_device.adrss,
+            .scl_speed_hz = g_display_device.i2c_freq
+        };
+        ret = i2c_master_bus_add_device(g_display_device.bus_handle, &config, &g_display_device.dev_handle);
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to add I2C device in callback: %s", esp_err_to_name(ret));
+            return 0;
+        }
+        break;
+    }
+
+    case U8X8_MSG_BYTE_SET_DC:
+        break;
+
+    case U8X8_MSG_BYTE_START_TRANSFER:
+        u8x8->i2c_started = 1;
+        u8x8->i2c_address = g_display_device.adrss;
+        break;
+
+    case U8X8_MSG_BYTE_SEND:
+    {
+        if (g_display_device.dev_handle == NULL)
+        {
+            ESP_LOGE(TAG, "dev_handle is NULL during BYTE_SEND");
+            break;
+        }
+        ret = i2c_master_transmit(g_display_device.dev_handle, arg_ptr, arg_int, pdMS_TO_TICKS(100));
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "I2C transmit failed in BYTE_SEND: %s", esp_err_to_name(ret));
+        }
+        break;
+    }
+
+    case U8X8_MSG_BYTE_END_TRANSFER:
+        u8x8->i2c_started = 0;
+        break;
+
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+uint8_t display_gpio_and_delay_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
+{
+    switch (msg)
+    {
+    case U8X8_MSG_GPIO_AND_DELAY_INIT:
+        // Já inicializamos o GPIO no i2c_local_init
+        return 1;
+
+    case U8X8_MSG_DELAY_MILLI:
+        vTaskDelay(pdMS_TO_TICKS(arg_int));
+        return 1;
+
+    case U8X8_MSG_DELAY_10MICRO:
+        // Espera aproximada de 10 microssegundos
+        for (volatile int i = 0; i < 320; i++)
+            ;
+        return 1;
+
+    case U8X8_MSG_DELAY_100NANO:
+        // Espera aproximada de 100 nanosegundos
+        for (volatile int i = 0; i < 32; i++)
+            ;
+        return 1;
+
+    default:
+        return 0;
+    }
+}
 
 esp_err_t display_init(void)
 {
-    display_handle.sda_pin = SDA_PIN;
-    display_handle.scl_pin = SCL_PIN;
-    display_handle.clk_speed = I2C_FREQ_HZ;
-    display_handle.device_adrss = 0x3C; // Endereço real (sem deslocamento)
+    g_display_device.scl_pin = SCL_PIN;
+    g_display_device.sda_pin = SDA_PIN;
+    g_display_device.i2c_freq = I2C_FREQ_HZ;
+    g_display_device.adrss = DISPLAY_ADDRS;
 
-    i2c_master_bus_handle_t i2c_bus_handle;
-    esp_err_t ret = i2c_local_get_bus(&i2c_bus_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get I2C bus handle: %d", ret);
-        return ret;
+    i2c_master_bus_handle_t local_bus_handle;
+    esp_err_t res = i2c_local_get_bus(&local_bus_handle);
+    if (res != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to initialize display (E: %s)", esp_err_to_name(res));
+        return res;
     }
-    
-    display_handle.i2c_bus_handle = i2c_bus_handle;
+    g_display_device.bus_handle = local_bus_handle;
 
-    ret = u8g2_i2c_init(&display_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize U8G2 I2C: %d", ret);
-        return ret;
-    }
+    u8g2_Setup_ssd1306_128x64_noname_1(&g_display_u8g2, U8G2_R0, display_cb, display_gpio_and_delay_cb);
+    // u8x8_SetI2CAddress(&g_display_u8g2.u8x8, DISPLAY_ADDRS << 1);
 
-    u8g2_Setup_sh1106_i2c_128x64_noname_f(&u8g2, U8G2_R0,
-                                        u8g2_i2c_byte_cb,
-                                        u8g2_esp32_gpio_and_delay_cb);
+    u8g2_InitDisplay(&g_display_u8g2);
 
-    u8x8_SetI2CAddress(&u8g2.u8x8, 0x78); // 0x3C << 1
+    u8g2_SetPowerSave(&g_display_u8g2, false);
 
-    ESP_LOGI(TAG, "u8g2_InitDisplay");
-    u8g2_InitDisplay(&u8g2);
+    u8g2_ClearBuffer(&g_display_u8g2);
 
-    ESP_LOGI(TAG, "u8g2_SetPowerSave");
-    u8g2_SetPowerSave(&u8g2, 0); // Wake up display
-    
-    ESP_LOGI(TAG, "u8g2_ClearBuffer");
-    u8g2_ClearBuffer(&u8g2);
+    // u8g2_DrawBitmap(&g_display_u8g2, 64, 32, 128, 64, &image_bitmap);
+    u8g2_SetFont(&g_display_u8g2, u8g2_font_helvR14_tr);
+    u8g2_DrawButtonUTF8(&g_display_u8g2, 64, 50, U8G2_BTN_SHADOW1 | U8G2_BTN_HCENTER | U8G2_BTN_BW2, 56, 2, 2, "Subscribe to ltkdt");
+    // vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Teste inicial
-    u8g2_SetFont(&u8g2, u8g2_font_helvR18_tf);
-    u8g2_DrawFrame(&u8g2, 0, 0, 125, 64);
-    u8g2_DrawButtonUTF8(&u8g2, 64, 41, U8G2_BTN_HCENTER, 1, 1, 1, "Hi World");
-    u8g2_SendBuffer(&u8g2);
-
-    display_initialized = true;
     return ESP_OK;
-}
-
-void display_clear(bool invert)
-{
-    if (!display_initialized) return;
-    
-    u8g2_ClearBuffer(&u8g2);
-    if (invert) {
-        u8g2_DrawBox(&u8g2, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-    }
-    u8g2_SendBuffer(&u8g2);
-}
-
-void display_write(char *data, int len, int line, bool invert)
-{
-    if (!display_initialized) return;
-    
-    // Altura aproximada de uma linha com a fonte padrão
-    const int line_height = 16;
-    int y_pos = line * line_height;
-    
-    if (invert) {
-        u8g2_SetDrawColor(&u8g2, 0);
-        u8g2_DrawBox(&u8g2, 0, y_pos - line_height + 2, DISPLAY_WIDTH, line_height);
-        u8g2_SetDrawColor(&u8g2, 1);
-    }
-    
-    u8g2_SetFont(&u8g2, u8g2_font_ncenB10_tr);
-    u8g2_DrawStr(&u8g2, 0, y_pos, data);
-    u8g2_SendBuffer(&u8g2);
 }
