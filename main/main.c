@@ -22,13 +22,6 @@ void app_main(void)
         return;
     }
 
-    res = display_init();
-    if(res!= ESP_OK)
-    {
-        ESP_LOGE(TAG,"Failed to initize display (E: %s)",esp_err_to_name(res));
-        return;
-    }
-
     res = temp_init();
     if(res!= ESP_OK)
     {
@@ -36,10 +29,17 @@ void app_main(void)
         return;
     }
 
-    res = app_init();
+    res = display_init();
     if(res!= ESP_OK)
     {
-        ESP_LOGE(TAG,"Failed to initize aplication (E: %s)",esp_err_to_name(res));
+        ESP_LOGE(TAG,"Failed to initize display (E: %s)",esp_err_to_name(res));
         return;
     }
+
+    // res = app_init();
+    // if(res!= ESP_OK)
+    // {
+    //     ESP_LOGE(TAG,"Failed to initize aplication (E: %s)",esp_err_to_name(res));
+    //     return;
+    // }
 }

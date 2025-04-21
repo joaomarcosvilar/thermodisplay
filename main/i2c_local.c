@@ -30,6 +30,8 @@ esp_err_t i2c_local_init(void)
 
     g_i2c_bus_cache = (void*)g_i2c_bus_handle;
     i2c_is_runnig = true;
+
+    ESP_LOGI(TAG,"I2C init");
     return res;
 }
 
