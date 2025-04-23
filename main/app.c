@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
+#include "freertos/queue.h"
 #include "driver/gpio.h"
 
 #include "app.h"
@@ -14,6 +15,8 @@
 #include "display/display.h"
 #include "temp/temp.h"
 #include "i2c_local.h"
+#include "wifi/mqtt.h"
+#include "wifi/wifi.h"
 
 #define TAG "app"
 
@@ -21,10 +24,16 @@
 #define APP_TASK_STACK_SIZE 3 * 1024
 #define APP_TASK_PRIOR 2
 
+#define APP_MQTT_TASK_NAME "app_mqtt_task"
+#define APP_MQTT_TASK_STACK_SIZE 3 * 1024
+#define APP_MQTT_TASK_PRIOR 3
+
 #define APP_TIMER_HAND_NAME "APP_TIMER_HAND"
 #define APP_TIMER_HAND_PERIOD pdMS_TO_TICKS(5 * 1000)
 #define APP_TIMER_HAND_AUTORELOAD false
 #define APP_TIMER_HAND_ID 0
+
+#define APP_QUEUE_MQTT_LEN 10
 
 #define APP_HAND_ON (1 << 0)
 #define APP_HAND_OFF (1 << 1)
@@ -32,10 +41,14 @@
 #define ESP_INTR_FLAG_DEFAULT 0
 
 TaskHandle_t app_task_handle;
+TaskHandle_t app_mqtt_task_handle;
 EventGroupHandle_t app_event;
 TimerHandle_t app_timer_hand;
+QueueHandle_t app_queue_mqtt;
 
 volatile bool app_hand_state = false;
+bool send_state_hand = false;
+
 float temp_sum = 0.0, contt = 0.0;
 
 static void IRAM_ATTR app_intr_hand(void *arg)
@@ -44,7 +57,6 @@ static void IRAM_ATTR app_intr_hand(void *arg)
 
     xEventGroupSetBitsFromISR(app_event, APP_HAND_ON, &pxH);
     app_hand_state = true;
-
     portYIELD_FROM_ISR(pxH);
 }
 
@@ -55,21 +67,37 @@ void app_timer_hand_callback(TimerHandle_t app_timer_hand)
     contt = 0.0;
     xEventGroupClearBits(app_event, APP_HAND_ON);
     display_clear(false);
+    send_state_hand = true;
+
 }
 
 void app_task(void *args)
 {
     EventBits_t bits;
     char buffer[APP_BUFFER_DISPLAY_SIZE_MAX] = {0};
+    mqtt_data_s mqtt_data = {0};
     while (true)
     {
         bits = xEventGroupGetBits(app_event);
         if (bits & APP_HAND_ON)
         {
             ESP_LOGI(TAG, "APP_HAND_ON");
+            if (!send_state_hand)
+            {
+                snprintf(mqtt_data.topic, MQTT_MAX_TOPIC_LEN, MQTT_TOPIC_HAND);
+                snprintf(mqtt_data.data, MQTT_MAX_DATA_LEN, "1");
+                mqtt_data.len = strlen(mqtt_data.data);
+                mqtt_data.qos = 0;
+                xQueueSend(app_queue_mqtt, (void *)&mqtt_data, 0);
+                memset(&mqtt_data, 0, sizeof(mqtt_data_s));
+                ESP_LOGI(TAG, "Send hand state");
+                send_state_hand = true;
+            }
+
             volatile float temp = temp_read_temp_to();
 
             contt += 1.0; // <- TODO: limitar tamanho
+
             // Média flutuante
             // temp_sum = temp_sum + temp;
             // float temp_float = temp_sum / contt;
@@ -86,8 +114,14 @@ void app_task(void *args)
                 temp_sum = temp * alfa + (1 - alfa) * temp_sum;
             }
             snprintf(buffer, APP_BUFFER_DISPLAY_SIZE_MAX, "C: %.2f", temp_sum);
-
             display_write(buffer, strlen(buffer), 4, false);
+
+            snprintf(mqtt_data.topic, MQTT_MAX_TOPIC_LEN, MQTT_TOPIC_TEMP);
+            snprintf(mqtt_data.data, MQTT_MAX_DATA_LEN, "%.4f", temp_sum);
+            mqtt_data.len = strlen(mqtt_data.data);
+            mqtt_data.qos = 0;
+            xQueueSend(app_queue_mqtt, (void *)&mqtt_data, 0);
+            memset(&mqtt_data, 0, sizeof(mqtt_data));
         }
 
         if (gpio_get_level(IR_GPIO) && app_hand_state)
@@ -99,6 +133,15 @@ void app_task(void *args)
         {
             ESP_LOGI(TAG, "APP_HAND_OFF");
             app_hand_state = false;
+            
+            snprintf(mqtt_data.topic, MQTT_MAX_TOPIC_LEN, MQTT_TOPIC_HAND);
+            snprintf(mqtt_data.data, MQTT_MAX_DATA_LEN, "0");
+            mqtt_data.len = strlen(mqtt_data.data);
+            mqtt_data.qos = 0;
+            xQueueSend(app_queue_mqtt, (void *)&mqtt_data, 0);
+            memset(&mqtt_data, 0, sizeof(mqtt_data_s));
+            ESP_LOGI(TAG, "Send hand state 0 ");
+
             xEventGroupClearBitsFromISR(app_event, APP_HAND_OFF);
 
             if (xTimerIsTimerActive(app_timer_hand) != pdFALSE)
@@ -115,6 +158,27 @@ void app_task(void *args)
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+void app_mqtt_task(void *args)
+{
+    wifi_status_e wifi;
+    mqtt_data_s buffer = {0};
+    while (true)
+    {
+        if (xQueueReceive(app_queue_mqtt, &buffer, pdMS_TO_TICKS(100)) == pdPASS)
+        {
+            wifi = wifi_status();
+            if (wifi != WIFI_STATUS_CONNECTED)
+            {
+                ESP_LOGE(TAG, "Failed send, wifi status: %d", wifi);
+                continue;
+            }
+
+            mqtt_publish(&buffer.topic, &buffer.data, buffer.len, buffer.qos);
+            memset(&buffer, 0, sizeof(mqtt_data_s));
+        }
+    };
 }
 
 esp_err_t app_init(void)
@@ -147,6 +211,13 @@ esp_err_t app_init(void)
         return ESP_FAIL;
     }
 
+    app_queue_mqtt = xQueueCreate(APP_QUEUE_MQTT_LEN, sizeof(mqtt_data_s));
+    if (app_queue_mqtt == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create queue mqtt");
+        return ESP_FAIL;
+    }
+
     app_timer_hand = xTimerCreate(
         APP_TIMER_HAND_NAME,
         APP_TIMER_HAND_PERIOD,
@@ -160,10 +231,29 @@ esp_err_t app_init(void)
     }
 
     BaseType_t xBase;
-    xBase = xTaskCreate(app_task, APP_TASK_NAME, APP_TASK_STACK_SIZE, NULL, APP_TASK_PRIOR, &app_task_handle);
+    xBase = xTaskCreate(
+        app_task,
+        APP_TASK_NAME,
+        APP_TASK_STACK_SIZE,
+        NULL,
+        APP_TASK_PRIOR,
+        &app_task_handle);
     if (xBase != pdPASS)
     {
-        ESP_LOGE(TAG, "Failed create task");
+        ESP_LOGE(TAG, "Failed create task %s", APP_TASK_NAME);
+        return ESP_FAIL;
+    }
+
+    xBase = xTaskCreate(
+        app_mqtt_task,
+        APP_MQTT_TASK_NAME,
+        APP_MQTT_TASK_STACK_SIZE,
+        NULL,
+        APP_MQTT_TASK_PRIOR,
+        &app_mqtt_task_handle);
+    if (xBase != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed create task %s", APP_MQTT_TASK_NAME);
         return ESP_FAIL;
     }
 
