@@ -47,51 +47,12 @@ void app_main(void)
         return;
     }
 
-    res = wifi_connect("PTHREAD", "fifo2rrobin");
-    if (res != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to connect wifi station (E: %s)", esp_err_to_name(res));
-        return;
-    }
-
-    wifi_status_e wifi = WIFI_STATUS_UNDEFINED;
-    do
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        wifi = wifi_status();
-        if (wifi == -1)
-        {
-            ESP_LOGE(TAG, "Failed to connect wifi");
-            return;
-        }
-    } while (wifi <= 0);
-    vTaskDelay(pdMS_TO_TICKS(500));
-
     res = mqtt_init();
     if (res != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed init mqtt (E: %s)", esp_err_to_name(res));
         return;
     }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-    res = mqtt_server("mqtt://192.168.15.15", 1883, "mavi_esp32c3", "default", "default");
-    if (res != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed init mqtt (E: %s)", esp_err_to_name(res));
-    }
-
-    mqtt_status_e mqtt = MQTT_STATUS_UNDEFINED;
-    do
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        mqtt = mqtt_status();
-        if (mqtt == MQTT_STATUS_FAILED)
-        {
-            ESP_LOGE(TAG, "Failed connect to server");
-            return;
-        }
-    } while (mqtt <= 0);
 
     res = app_init();
     if (res != ESP_OK)
